@@ -1,0 +1,30 @@
+[
+    {
+        "ParameterKey":"EnvironmentName",
+        "ParameterValue":"ALXUdacityCfLesson4"
+    },
+    {
+        "ParameterKey":"InstanceType",
+        "ParameterValue":"t3.small"
+    },
+    {
+        "ParameterKey":"JumpboxInstanceType",
+        "ParameterValue":"t2.micro"
+    },
+    {
+        "ParameterKey":"KeyPairName",
+        "ParameterValue":"theblackdove"
+    },
+    {
+        "ParameterKey":"JumpboxKeyPairName",
+        "ParameterValue":"jumpbox"
+    },
+    {
+        "ParameterKey":"AmiId",
+        "ParameterValue":"ami-0b860b555a071dc60"
+    },
+    {
+        "ParameterKey":"JumpboxAmiId",
+        "ParameterValue":"ami-0022f774911c1d690"
+    }
+]

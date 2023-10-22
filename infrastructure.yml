@@ -1,0 +1,271 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: 
+  Similoluwa Okunowo / ALX 
+  This example deploys the server infrastructure for the ALX Cloud DevOps Nanodegree project 2. 
+  The project involves deploying a highly available web application. 
+
+Parameters:
+  EnvironmentName:
+    Description: An environment name that will be used to tag all provisioned resources.
+    Type: String 
+  
+  InstanceType: 
+    Description: Instance Type Parameter -- Enter t2.micro, t3.micro, m1.large, m1.small. Default is t3.small
+    Type: String 
+    AllowedValues: 
+    - t2.micro 
+    - t3.micro 
+    - t3.small
+    - m1.small
+    - m1.large  
+    Default: t3.small
+  
+  JumpboxInstanceType:
+    Description: Instance Type Parameter -- Enter t2.micro, t3.micro, m1.large, m1.small. Default is t2.micro
+    Type: String 
+    AllowedValues: 
+    - t2.micro 
+    - t3.micro 
+    - t3.small
+    - m1.small
+    - m1.large  
+    Default: t2.micro 
+
+  AmiId: 
+    Description: Amazon Machine Image ID -- to be used in the instance launch configuration
+    Type: AWS::EC2::Image::Id
+
+  JumpboxAmiId: 
+    Description: Amazon Machine Image ID -- to be used in creating the jumpbox instance
+    Type: AWS::EC2::Image::Id
+
+  KeyPairName: 
+    Description: Key pair name (.pem)
+    Type: String 
+    Default: theblackdove
+
+  JumpboxKeyPairName:
+    Description: Key pair name for the jumpbox instance (.pem)
+    Type: String 
+    Default: jumpbox
+
+Resources: 
+  # S3 Read-only role for the EC2 instance 
+  UdacityS3ReadOnlyEC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: EC2 -- S3 Read Only Access Role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      ManagedPolicyArns: 
+        - arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess
+
+  # Instance profile to be associated with the EC2 servers in the ASG
+  ProfileWithRolesForOurApp:
+    Type: AWS::IAM::InstanceProfile
+    Properties: 
+      Roles:
+        - !Ref UdacityS3ReadOnlyEC2Role
+
+  # Security Group configuration for the load balancer 
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup 
+    Properties:
+      GroupDescription: Allow HTTP Access to the Load Balancer 
+      VpcId: 
+        Fn::ImportValue: 
+          !Sub "${EnvironmentName}-VPCID"
+      SecurityGroupIngress: #inbound traffic rules
+      - IpProtocol: tcp 
+        FromPort: 80 
+        ToPort: 80 
+        CidrIp: 0.0.0.0/0 
+      SecurityGroupEgress: #outbound traffic rules 
+      - IpProtocol: tcp 
+        FromPort: 80 
+        ToPort: 80 
+        CidrIp: 0.0.0.0/0 
+      Tags: 
+        - Key: Name 
+          Value: LoadBalancerSecurityGroup
+  
+  # Security Group configuration for the webserver 
+  WebServerSecurityGroup: 
+    Type: AWS::EC2::SecurityGroup 
+    Properties: 
+      GroupDescription: Allow HTTP access and SSH to local only 
+      VpcId: 
+        Fn::ImportValue: 
+          !Sub "${EnvironmentName}-VPCID"
+      SecurityGroupIngress: 
+      - IpProtocol: tcp 
+        FromPort: 80 
+        ToPort: 80 
+        CidrIp: 0.0.0.0/0 
+      - IpProtocol: tcp 
+        FromPort: 22 
+        ToPort: 22 
+        CidrIp: 0.0.0.0/0
+      SecurityGroupEgress: 
+      - IpProtocol: tcp 
+        FromPort: 0 
+        ToPort: 65535 
+        CidrIp: 0.0.0.0/0
+      Tags: 
+        - Key: Name 
+          Value: WebServerSecurityGroup
+  
+  # Web application launch configuration 
+  # This includes AMI, instance type, security group, user data, etc. 
+  WebAppLaunchConfiguration: 
+    Type: AWS::AutoScaling::LaunchConfiguration 
+    Properties:
+      ImageId: !Ref AmiId 
+      InstanceType: !Ref InstanceType 
+      # KeyName: !Ref KeyPairName
+      IamInstanceProfile: !Ref ProfileWithRolesForOurApp
+      SecurityGroups: 
+      - Ref: WebServerSecurityGroup 
+      BlockDeviceMappings: 
+      - DeviceName: "/dev/sdk"
+        Ebs: 
+          VolumeSize: '10'
+      UserData: 
+        Fn::Base64:
+          !Sub | 
+            #!/bin/bash 
+            apt-get update -y 
+            apt-get install apache2 -y 
+            systemctl start apache2.service 
+            sudo chmod -R 775 /var/www/html 
+            echo "<h1>It works! Udagram, Udacity.</h1>" > /var/www/html/index.html
+  
+  # Define the Auto-scaling group (ASG) configuration
+  WebAppAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties: 
+      AutoScalingGroupName: UdagramASG 
+      VPCZoneIdentifier: #VPC subnet IDs where the instances in the ASG will be created 
+      - Fn::ImportValue: 
+          !Sub "${EnvironmentName}-Private-Subnets"
+      LaunchConfigurationName: # A launch template can be used alternatively 
+        Ref: WebAppLaunchConfiguration 
+      DesiredCapacity: '4'
+      MinSize: '4'
+      MaxSize: '4'
+      TargetGroupARNs: #for using elastic load balancing with the ASG 
+      - Ref: WebAppTargetGroup 
+      HealthCheckGracePeriod: 60 
+      HealthCheckType: ELB
+
+  # Define the load balancer, target group, listener, and listener rule 
+  # Web application load balancer 
+  WebAppLoadBalancer: 
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer 
+    Properties: 
+      Subnets: 
+      - Fn::ImportValue: !Sub "${EnvironmentName}-Public-Subnet-1"
+      - Fn::ImportValue: !Sub "${EnvironmentName}-Public-Subnet-2"
+      SecurityGroups: 
+      - Ref: LoadBalancerSecurityGroup
+
+  # Listener attached to the load balancer 
+  # The listener will check for any traffic directed to the target group on HTTP port 80 
+  LBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener 
+    Properties: 
+      DefaultActions: 
+      - Type: forward 
+        TargetGroupArn: 
+          Ref: WebAppTargetGroup 
+      LoadBalancerArn: 
+        Ref: WebAppLoadBalancer 
+      Port: '80'
+      Protocol: HTTP 
+
+  # Definining the load balancer listener rule 
+  # Every listener requires a listener rule attached to it
+  # the listener rule will determine how (the condition) with which the load balancer's requests are 
+  # routed to the desired targets 
+  ALBListenerRule: 
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule 
+    Properties: 
+      Actions:
+      - Type: forward 
+        TargetGroupArn: !Ref 'WebAppTargetGroup'
+      Conditions:
+      - Field: path-pattern 
+        Values: [/]
+      ListenerArn: !Ref 'LBListener'
+      Priority: 1 
+
+  # The web application target group to be attached to the ASG 
+  WebAppTargetGroup: 
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties: 
+      HealthCheckIntervalSeconds: 30 #perform the healthcheck every 10s 
+      HealthCheckPath: / 
+      HealthCheckProtocol: HTTP 
+      HealthCheckTimeoutSeconds: 20 
+      HealthyThresholdCount: 2   #number of consecutive checks to perform before changing the status of an unhealthy server to healthy
+      UnhealthyThresholdCount: 5 #number of consecutive checks to perform before changing the status og a healthy server to healthy
+      Protocol: HTTP
+      Port: 80  #port to perform the check on 
+      VpcId: 
+        Fn::ImportValue: 
+          !Sub "${EnvironmentName}-VPCID"
+
+  # Bastion Host resources
+  # Jumpbox server (Bastion Host) security group
+  JumpboxInstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow SSH
+      VpcId: 
+        Fn::ImportValue: 
+          !Sub "${EnvironmentName}-VPCID"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+
+  # Jumpbox EC2 instance
+  JumpboxEC2Instance:
+    Type: AWS::EC2::Instance
+    Properties: 
+      InstanceType: !Ref JumpboxInstanceType 
+      ImageId: !Ref JumpboxAmiId
+      KeyName: !Ref JumpboxKeyPairName
+      NetworkInterfaces: 
+      - AssociatePublicIpAddress: "true"
+        DeviceIndex: "0"
+        GroupSet: 
+          - Ref: "JumpboxInstanceSecurityGroup"
+        SubnetId: 
+          Fn::ImportValue: 
+            !Sub "${EnvironmentName}-Public-Subnet-1"
+      Tags: 
+        - Key: Name 
+          Value: Jumpbox
+          
+Outputs: 
+  LoadBalancerDNSName: 
+    Description: A reference to the DNS of the created load balancer 
+    Value: !GetAtt WebAppLoadBalancer.DNSName
+    Export:
+      Name: !Sub ${EnvironmentName}-WebAppProject-LoadBalancerDNSName
+  
+  JumpboxEC2InstancePublicIP:
+    Description: A reference to the public IP of the jump box instance 
+    Value: !GetAtt JumpboxEC2Instance.PublicIp 
+    Export: 
+      Name: !Sub ${EnvironmentName}-Jumpbox-PublicIp
